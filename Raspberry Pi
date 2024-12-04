@@ -1,0 +1,134 @@
+import sys
+from PyQt5 import QtWidgets, QtGui, QtCore
+from openpyxl import load_workbook
+from datetime import datetime
+import serial
+import time
+
+class MyDialog(QtWidgets.QDialog):
+    def __init__(self):
+        super().__init__()
+        self.setup_ui()
+        self.initialize_data()
+
+    def setup_ui(self):
+        self.setWindowTitle("Ensayos Eléctricos")
+        self.resize(800, 600)
+
+        # Layout principal
+        layout = QtWidgets.QVBoxLayout()
+
+        # Controles de ensayo
+        self.test_buttons = []
+        self.test_status = [False] * 6  # Estado de cada ensayo (activo o no)
+        self.progress_bars = []
+        self.lcd_displays = []
+
+        for i, test_name in enumerate(["Puesta a Tierra", "Corriente de Fuga", "Resistencia Aislación",
+                                        "Rigidez Dieléctrica", "Corriente", "Potencia"]):
+            button = QtWidgets.QPushButton(test_name)
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked, index=i: self.toggle_test(index))
+            self.test_buttons.append(button)
+
+            progress_bar = QtWidgets.QProgressBar()
+            self.progress_bars.append(progress_bar)
+
+            lcd_display = QtWidgets.QLCDNumber()
+            self.lcd_displays.append(lcd_display)
+
+            h_layout = QtWidgets.QHBoxLayout()
+            h_layout.addWidget(button)
+            h_layout.addWidget(progress_bar)
+            h_layout.addWidget(lcd_display)
+
+            layout.addLayout(h_layout)
+
+        # Botón para iniciar los ensayos
+        self.start_button = QtWidgets.QPushButton("Iniciar Ensayos")
+        self.start_button.clicked.connect(self.start_tests)
+        layout.addWidget(self.start_button)
+
+        # Botón para guardar y cerrar
+        self.save_button = QtWidgets.QPushButton("Guardar y Salir")
+        self.save_button.clicked.connect(self.save_and_exit)
+        layout.addWidget(self.save_button)
+
+        self.setLayout(layout)
+
+    def initialize_data(self):
+        # Variables iniciales
+        self.excel_path = "contacts.xlsx"  # Archivo de registro de ensayos
+        self.limits = {
+            "Puesta a Tierra": (100, 300),
+            "Corriente de Fuga": (50, 150),
+            "Resistencia Aislación": (1000, 5000),
+            "Rigidez Dieléctrica": (500, 2000),
+            "Corriente": (10, 50),
+            "Potencia": (100, 500)
+        }
+        self.arduino_port = "/dev/ttyACM0"  # Puerto del Arduino
+        self.arduino_baudrate = 9600
+
+    def toggle_test(self, index):
+        # Cambiar estado de un ensayo
+        self.test_status[index] = not self.test_status[index]
+        color = "yellow" if self.test_status[index] else "none"
+        self.test_buttons[index].setStyleSheet(f"background-color: {color};")
+
+    def start_tests(self):
+        # Iniciar los ensayos seleccionados
+        try:
+            with serial.Serial(self.arduino_port, self.arduino_baudrate, timeout=1) as arduino:
+                for i, is_active in enumerate(self.test_status):
+                    if is_active:
+                        test_name = self.test_buttons[i].text()
+                        print(f"Iniciando ensayo: {test_name}")
+                        self.perform_test(arduino, test_name, i)
+        except serial.SerialException as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"No se pudo conectar al Arduino:\n{e}")
+
+    def perform_test(self, arduino, test_name, index):
+        # Ejecutar un ensayo específico
+        min_limit, max_limit = self.limits[test_name]
+        command = str(index + 1).encode()  # Comando al Arduino
+
+        arduino.write(command)
+        time.sleep(0.1)
+
+        for _ in range(100):  # Simulación de progreso
+            if arduino.inWaiting() > 0:
+                value = int(arduino.readline().strip())
+                self.lcd_displays[index].display(value)
+                self.progress_bars[index].setValue(int((value - min_limit) / (max_limit - min_limit) * 100))
+
+                if min_limit <= value <= max_limit:
+                    print(f"{test_name} Aprobado: {value}")
+                else:
+                    print(f"{test_name} Reprobado: {value}")
+                break
+            time.sleep(0.01)
+
+    def save_and_exit(self):
+        # Guardar resultados en el archivo Excel y cerrar
+        try:
+            workbook = load_workbook(self.excel_path)
+            sheet = workbook.active
+            row = sheet.max_row + 1
+
+            for i, test_name in enumerate(["Puesta a Tierra", "Corriente de Fuga", "Resistencia Aislación",
+                                           "Rigidez Dieléctrica", "Corriente", "Potencia"]):
+                sheet.cell(row=row, column=i + 1, value=self.lcd_displays[i].value())
+
+            sheet.cell(row=row, column=8, value=datetime.now())
+            workbook.save(self.excel_path)
+            print("Resultados guardados correctamente.")
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Error", f"No se pudo guardar el archivo:\n{e}")
+        self.close()
+
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    dialog = MyDialog()
+    dialog.show()
+    sys.exit(app.exec_())
